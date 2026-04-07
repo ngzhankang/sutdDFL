@@ -1,0 +1,54 @@
+syntax = "proto3";
+
+package dfl;
+
+// Service exposed by every Jetson peer
+service PeerService {
+    // Exchange metadata (loss history, label distribution) for knowledge gain evaluation
+    rpc ExchangeMeta (MetaRequest) returns (MetaResponse);
+    // Push model state_dict to a peer
+    rpc PushModel (ModelPayload) returns (Ack);
+    // Health check / peer discovery
+    rpc Ping (PingRequest) returns (PingResponse);
+}
+
+message PingRequest {
+    string sender_id = 1;
+    string sender_addr = 2;
+}
+
+message PingResponse {
+    string peer_id = 1;
+    bool is_active = 2;
+}
+
+message MetaRequest {
+    string sender_id = 1;
+}
+
+message MetaResponse {
+    string peer_id = 1;
+    float loss_prev = 2;       // loss_history[-2]
+    float loss_current = 3;    // loss_history[-1]
+    repeated float label_dist = 4;  // label distribution for EMD
+    float cpu_frequency = 5;
+    float idle_time = 6;       // seconds idle since last train
+}
+
+message TensorProto {
+    string name = 1;
+    bytes data = 2;            // serialized tensor bytes
+    repeated int64 shape = 3;
+    string dtype = 4;
+}
+
+message ModelPayload {
+    string sender_id = 1;
+    repeated TensorProto tensors = 2;
+    float loss_current = 3;
+}
+
+message Ack {
+    bool success = 1;
+    string message = 2;
+}
