@@ -1,6 +1,6 @@
 #!/bin/bash
 # Run from the dfl_physical directory
-python -m grpc_tools.protoc \
+python3 -m grpc_tools.protoc \
     -I./protos \
     --python_out=./client/transport \
     --grpc_python_out=./client/transport \
