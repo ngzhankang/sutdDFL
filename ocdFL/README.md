@@ -25,7 +25,7 @@ Scales to N Jetsons — each node auto-discovers all peers on the same subnet.
 | Neighbors | `client.lookup(clients)` iterates in-memory list | `discover_neighbors()` pings peers via gRPC |
 | Model exchange | `sender.model` read from Python reference | `PushModel` RPC serializes state_dict to protobuf |
 | Knowledge gain | `neighbor.model.loss_history` accessed directly | `ExchangeMeta` RPC fetches loss/label_dist remotely |
-| Data Distribution Difference | Not explicitly used | EMD computed over label distributions via metadata |
+| Data Distribution Difference | Not explicitly used | EMD integrated into peer selection optimizer via `gamma` weight |
 | Aggregation | Synchronous loop over `active_clients` | Asynchronous: models buffered, FedAvg after timeout |
 | Peer selection | `EfficientPeerSelector` on `Client` objects | Same optimization, operates on `RemotePeerProxy` |
 
@@ -86,12 +86,10 @@ bash run.sh
 
 **Start the first Jetson, then the rest.** The first node listens immediately; subsequent nodes discover it on boot.
 
-<img width="1178" height="153" alt="image" src="https://github.com/user-attachments/assets/9945cc89-d2f3-47e7-9829-e6ffcd72daae" />
-
 ### 3. Override defaults with environment variables
 
 ```bash
-ROUNDS=50 LOCAL_EPOCHS=5 BATCH_SIZE=128 LR=0.005 ALPHA=0.1 DEVICE=cpu bash run.sh
+ROUNDS=50 LOCAL_EPOCHS=5 BATCH_SIZE=128 LR=0.005 ALPHA=0.1 GAMMA=0.5 DEVICE=cpu bash run.sh
 ```
 
 | Variable | Default | Description |
@@ -101,6 +99,7 @@ ROUNDS=50 LOCAL_EPOCHS=5 BATCH_SIZE=128 LR=0.005 ALPHA=0.1 DEVICE=cpu bash run.s
 | `BATCH_SIZE` | 64 | DataLoader batch size |
 | `LR` | 0.01 | Learning rate |
 | `ALPHA` | 0.5 | Dirichlet concentration (lower = more non-IID) |
+| `GAMMA` | 0.3 | EMD weight in peer selection (higher = prefer diverse peers) |
 | `DEVICE` | cuda | `cuda` or `cpu` |
 
 ### 4. Check results
@@ -144,11 +143,13 @@ The simulator enforces lock-step rounds. In physical deployment, network latency
 5. Pushes its model to selected peers
 6. Waits briefly, then FedAvg-aggregates whatever has arrived
 
-### OCD-FL peer selection preserved
-The `select_peers()` method in `PhysicalClient` reimplements the exact optimization from `EfficientPeerSelector`:
+### OCD-FL peer selection with EMD-aware diversity
+The `select_peers()` method in `PhysicalClient` reimplements the optimization from `EfficientPeerSelector`, extended with data-heterogeneity awareness:
 - Knowledge gain: `KG = (1 - exp(-2d)) * 1(d>0)` where `d = loss_neighbor - loss_self`
+- Data diversity: EMD between local and neighbor label distributions, normalized to [0, 1]
 - Communication cost: model transfer time + straggler penalty
-- Optimization: Adam maximizing `(B*KG) / (B*cost) + theta*||w||_2` with sigmoid masking
+- Optimization: Adam maximizing `dot(B, KG + gamma * EMD) / dot(B, cost) + theta * ||w||_2` with sigmoid masking
+- `gamma` controls how aggressively nodes seek peers with different data distributions — higher values accelerate convergence under non-IID partitions
 
 ### Data Distribution Difference (EMD)
-Each node computes its local label frequency vector and shares it via `ExchangeMeta`. The Earth Mover Distance `L(D_Vk, D_G) = sum_j |p_j - q_j|` is available for extended peer selection criteria.
+Each node computes its local label frequency vector and shares it via `ExchangeMeta`. The Earth Mover Distance `L(D_Vk, D_G) = sum_j |p_j - q_j|` is computed between the local node and each neighbor. This is directly integrated into the peer selection reward function, aligning the implementation with the OCD-FL multi-objective cost function `min O(K) = gamma_1 * O_C + gamma_2 * O_T + gamma_3 * O_L` from the project's theoretical framework.
