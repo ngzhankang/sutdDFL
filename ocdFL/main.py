@@ -2,26 +2,16 @@
 """
 Physical Decentralized Federated Learning — Main Entry Point
 
-Replaces the simulator's round-robin loop with a real asynchronous P2P
-training loop over gRPC.  Each Jetson runs this script with its own config.
+Usage (via universal launcher):
+    bash run.sh
 
-Usage on Jetson 1 (192.168.38.37):
-    python main.py --node-id jetson1 \
-                   --listen 0.0.0.0:50051 \
-                   --self-ip 192.168.38.37 \
-                   --peers jetson2=192.168.38.209:50051 \
-                   --rounds 20 \
-                   --local-epochs 3 \
-                   --device cuda
-
-Usage on Jetson 2 (192.168.38.209):
-    python main.py --node-id jetson2 \
-                   --listen 0.0.0.0:50051 \
-                   --self-ip 192.168.38.209 \
-                   --peers jetson1=192.168.38.37:50051 \
-                   --rounds 20 \
-                   --local-epochs 3 \
-                   --device cuda
+Manual usage:
+    python3 main.py --node-id jetson1 \
+                    --listen 0.0.0.0:50051 \
+                    --self-ip <auto-detected> \
+                    --peers jetson2=<peer_ip>:50051 \
+                    --rounds 20 \
+                    --device cuda
 """
 
 import argparse
@@ -105,7 +95,7 @@ def main():
     parser.add_argument("--listen", default="0.0.0.0:50051", help="gRPC listen address")
     parser.add_argument("--self-ip", required=True, help="This node's IP on the subnet")
     parser.add_argument(
-        "--peers", nargs="+", required=True,
+        "--peers", nargs="*", default=[],
         help="Peer addresses as id=ip:port, e.g. jetson2=192.168.38.209:50051",
     )
     parser.add_argument("--rounds", type=int, default=20, help="Number of FL rounds")
