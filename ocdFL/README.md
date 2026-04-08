@@ -86,6 +86,8 @@ bash run.sh
 
 **Start the first Jetson, then the rest.** The first node listens immediately; subsequent nodes discover it on boot.
 
+<img width="1178" height="153" alt="image" src="https://github.com/user-attachments/assets/9945cc89-d2f3-47e7-9829-e6ffcd72daae" />
+
 ### 3. Override defaults with environment variables
 
 ```bash
