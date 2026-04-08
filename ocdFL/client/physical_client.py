@@ -456,7 +456,7 @@ class PhysicalClient:
         agg_sd = {}
         for key in own_sd:
             stacked = torch.stack(
-                [sd[key].float() for sd in all_sds if key in sd]
+                [sd[key].float().to(self.device) for sd in all_sds if key in sd]
             )
             agg_sd[key] = stacked.mean(dim=0)
 
