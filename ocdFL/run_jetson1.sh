@@ -5,7 +5,7 @@
 
 set -e
 
-cd /app  # mapped from /home/$USER/SUTD
+cd /app/sutdDFL/ocdFL  # mapped from /home/$USER/SUTD
 
 # Compile protos (only needed once)
 bash compile_protos.sh
