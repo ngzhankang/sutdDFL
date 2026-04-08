@@ -109,6 +109,8 @@ def main():
     parser.add_argument("--log-dir", default="./logs")
     parser.add_argument("--selector-theta", type=float, default=0.02,
                         help="OCD-FL selector regularization")
+    parser.add_argument("--selector-gamma", type=float, default=0.3,
+                        help="Weight for EMD-based data diversity in peer selection")
     parser.add_argument("--sync-barrier-timeout", type=float, default=30.0,
                         help="Seconds to wait for peer readiness before each round")
     args = parser.parse_args()
@@ -168,6 +170,7 @@ def main():
         batch_size=args.batch_size,
         num_classes=10,
         selector_theta=args.selector_theta,
+        selector_gamma=args.selector_gamma,
         device=args.device,
     )
 

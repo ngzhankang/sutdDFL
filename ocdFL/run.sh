@@ -1,4 +1,3 @@
-cat > run.sh << 'EOF'
 #!/bin/bash
 set -e
 cd /app/sutdDFL/ocdFL
@@ -52,5 +51,3 @@ python3 main.py \
     --device "${DEVICE:-cuda}" \
     --data-dir ./data \
     --log-dir ./logs
-EOF
-chmod +x run.sh

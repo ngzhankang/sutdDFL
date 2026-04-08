@@ -145,6 +145,7 @@ class PhysicalClient:
         batch_size: int = 64,
         num_classes: int = 10,
         selector_theta: float = 0.02,
+        selector_gamma: float = 0.3,
         device: str = "cpu",
     ):
         self.node_id = node_id
@@ -171,6 +172,7 @@ class PhysicalClient:
 
         # OCD-FL peer selection
         self.selector_theta = selector_theta
+        self.selector_gamma = selector_gamma
         self.neighbors: List[RemotePeerProxy] = []
         self.peers: List[RemotePeerProxy] = []
         self.is_active = True
@@ -314,12 +316,24 @@ class PhysicalClient:
         kgains = [self.knowledge_gain(n) for n in self.neighbors]
         costs = [self.communication_cost(n) for n in self.neighbors]
 
+        # After computing kgains and costs, add EMD as a bonus signal
+        emds = [self.data_distribution_difference(n) for n in self.neighbors]
+        max_emd = max(emds) if max(emds) > 0 else 1.0
+        emd_norm = [e / max_emd for e in emds]
+
         # Normalize costs to [0, 1]
         max_cost = max(costs) if max(costs) > 0 else 1.0
         costs_norm = [c / max_cost for c in costs]
 
         t_kgain = torch.tensor(kgains, dtype=torch.float32)
         t_cost = torch.tensor(costs_norm, dtype=torch.float32)
+
+        # EMD: prefer peers with different data distributions
+        emds = [self.data_distribution_difference(n) for n in self.neighbors]
+        max_emd = max(emds) if max(emds) > 0 else 1.0
+        emd_norm = [e / max_emd for e in emds]
+        t_emd = torch.tensor(emd_norm, dtype=torch.float32)
+
 
         # Optimization (from EfficientPeerSelector)
         n = len(self.neighbors)
@@ -333,7 +347,7 @@ class PhysicalClient:
         for epoch in range(500):
             optimizer.zero_grad()
             betas = torch.sigmoid(weights)
-            reward = torch.dot(betas, t_kgain) / (torch.dot(betas, t_cost) + 1e-8)
+            reward = torch.dot(betas, t_kgain + self.selector_gamma * t_emd) / (torch.dot(betas, t_cost) + 1e-8)
             reg = theta * torch.norm(weights, p=2)
             loss = reward + reg
             loss.backward()
