@@ -113,6 +113,8 @@ def main():
                         help="Weight for EMD-based data diversity in peer selection")
     parser.add_argument("--sync-barrier-timeout", type=float, default=30.0,
                         help="Seconds to wait for peer readiness before each round")
+    parser.add_argument("--dataset", default="MNIST", choices=["MNIST", "FashionMNIST", "CIFAR10"],
+                        help="Dataset to use for training")
     args = parser.parse_args()
 
     # Parse peers
@@ -129,16 +131,36 @@ def main():
     # ------------------------------------------------------------------
     # Data
     # ------------------------------------------------------------------
-    transform = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize((0.1307,), (0.3081,)),
-    ])
-    full_train = datasets.MNIST(root=args.data_dir, train=True, download=True, transform=transform)
-    test_set = datasets.MNIST(root=args.data_dir, train=False, download=True, transform=transform)
+    DatasetClass = getattr(datasets, args.dataset)
 
-    partitions = dirichlet_split(full_train, num_nodes, alpha=args.dirichlet_alpha)
+    if args.dataset == "FashionMNIST":
+        transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize((0.2860,), (0.3530,)),
+        ])
+    else:
+        transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize((0.1307,), (0.3081,)),
+        ])
+
+    full_dataset = DatasetClass(root=args.data_dir, train=True, download=True, transform=transform)
+
+    # 70/30 train/test split
+    total = len(full_dataset)
+    train_size = int(0.7 * total)
+    test_size = total - train_size
+    full_train, test_set = torch.utils.data.random_split(
+        full_dataset, [train_size, test_size],
+        generator=torch.Generator().manual_seed(42),
+    )
+
+    partitions = dirichlet_split(full_dataset, num_nodes, alpha=args.dirichlet_alpha)
     my_indices = partitions[my_index]
-    train_subset = Subset(full_train, my_indices)
+    # Remap indices to the 70% train subset
+    train_indices_set = set(full_train.indices)
+    my_train_indices = [i for i in my_indices if i in train_indices_set]
+    train_subset = Subset(full_dataset, my_train_indices)
 
     logger.info(
         f"[{args.node_id}] Data partition: {len(my_indices)} samples "
