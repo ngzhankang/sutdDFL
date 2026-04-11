@@ -51,3 +51,5 @@ python3 main.py \
     --device "${DEVICE:-cuda}" \
     --data-dir ./data \
     --log-dir ./logs
+    --dataset "${DATASET:-MNIST}" \
+    --selector-gamma "${GAMMA:-0.3}" \

@@ -155,6 +155,15 @@ def main():
         generator=torch.Generator().manual_seed(42),
     )
 
+     # Build label list for partitioning
+    class LabeledSubset:
+        def __init__(self, subset):
+            self.subset = subset
+        def __len__(self):
+            return len(self.subset)
+        def __getitem__(self, idx):
+            return self.subset[idx]
+
     partitions = dirichlet_split(full_dataset, num_nodes, alpha=args.dirichlet_alpha)
     my_indices = partitions[my_index]
     # Remap indices to the 70% train subset
