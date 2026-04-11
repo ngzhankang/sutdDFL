@@ -51,8 +51,7 @@ ocdFL/
 ```
 
 ## Prerequisites
-
-- Docker container `sutd-dfl-jetson:v1` launched with `--net=host`
+- At least one Jetson running a Docker container with `--net=host --dns 8.8.8.8` (e.g. `docker run --net=host --dns 8.8.8.8 -v /home/$USER/SUTD:/app <your_image>`)
 - All Jetsons on the same WiFi network (hotspot or router — IPs are auto-detected)
 - Working directory `/app` mapped to host's `/home/$USER/SUTD`
 
@@ -86,23 +85,7 @@ bash run.sh
 
 **Start the first Jetson, then the rest.** The first node listens immediately; subsequent nodes discover it on boot.
 
-### 3. Override defaults with environment variables
-
-```bash
-ROUNDS=50 LOCAL_EPOCHS=5 BATCH_SIZE=128 LR=0.005 ALPHA=0.1 GAMMA=0.5 DEVICE=cpu bash run.sh
-```
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `ROUNDS` | 20 | Number of FL rounds |
-| `LOCAL_EPOCHS` | 3 | Local training epochs per round |
-| `BATCH_SIZE` | 64 | DataLoader batch size |
-| `LR` | 0.01 | Learning rate |
-| `ALPHA` | 0.5 | Dirichlet concentration (lower = more non-IID) |
-| `GAMMA` | 0.3 | EMD weight in peer selection (higher = prefer diverse peers) |
-| `DEVICE` | cuda | `cuda` or `cpu` |
-
-### 4. Check results
+### 3. Check results
 
 Metrics are saved to `./logs/<node_id>_metrics.json` on each Jetson, e.g.:
 
@@ -111,6 +94,83 @@ cat logs/sutdjetson1_metrics.json | python3 -m json.tool
 ```
 
 Each entry contains per-round train loss, test accuracy (pre/post aggregation), number of peers selected, and round time.
+
+## Dataset Selection
+ 
+Supported datasets: `MNIST`, `FashionMNIST`, `CIFAR10`. Datasets download automatically on first run.
+ 
+```bash
+DATASET=FashionMNIST bash run.sh
+```
+ 
+Or manually:
+ 
+```bash
+python3 main.py --node-id sutdjetson1 --self-ip 192.168.1.86 --dataset FashionMNIST ...
+```
+ 
+The data pipeline uses a **70/30 train/test split** applied before partitioning across nodes.
+ 
+## Data Partitioning
+ 
+Training data is split across all discovered nodes using a **Dirichlet distribution**. The `--dirichlet-alpha` (or `ALPHA` env var) controls how the data is distributed:
+ 
+| Alpha Value | Distribution | Use Case |
+|-------------|-------------|----------|
+| `0.1` | Highly non-IID (each node gets mostly 1–2 classes) | Stress-test federated aggregation |
+| `0.5` | Moderately non-IID (default) | Realistic edge scenario |
+| `1.0` | Mildly non-IID | Moderate heterogeneity |
+| `10000` | Near-uniform IID (equal split) | Baseline comparison |
+ 
+**Example: 3 Jetsons with equal IID split on FashionMNIST:**
+ 
+```bash
+DATASET=FashionMNIST ALPHA=10000 bash run.sh
+```
+ 
+Each node deterministically receives its partition based on sorted hostname, so all nodes get complementary (non-overlapping) data shards without coordination.
+ 
+## Configuration Reference
+ 
+All parameters can be set via environment variables in `run.sh` or passed directly to `main.py`.
+ 
+### Environment Variables (for `run.sh`)
+ 
+```bash
+DATASET=FashionMNIST ROUNDS=30 LOCAL_EPOCHS=5 BATCH_SIZE=128 LR=0.005 ALPHA=0.5 GAMMA=0.3 DEVICE=cuda bash run.sh
+```
+ 
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DATASET` | MNIST | Dataset: `MNIST`, `FashionMNIST`, or `CIFAR10` |
+| `ROUNDS` | 20 | Number of FL rounds |
+| `LOCAL_EPOCHS` | 3 | Local training epochs per round |
+| `BATCH_SIZE` | 64 | DataLoader batch size |
+| `LR` | 0.01 | Learning rate (SGD with momentum=0.9) |
+| `ALPHA` | 0.5 | Dirichlet concentration (lower = more non-IID, very high = equal split) |
+| `GAMMA` | 0.3 | EMD weight in peer selection (higher = prefer diverse peers) |
+| `THETA` | 0.02 | OCD-FL selector L2 regularization |
+| `DEVICE` | cuda | `cuda` or `cpu` |
+ 
+### CLI Arguments (for `main.py`)
+ 
+```bash
+python3 main.py \
+    --node-id sutdjetson1 \
+    --listen 0.0.0.0:50051 \
+    --self-ip 192.168.1.86 \
+    --peers sutdjetson2=192.168.1.91:50051 sutdjetson3=192.168.1.92:50051 \
+    --dataset FashionMNIST \
+    --rounds 30 \
+    --local-epochs 5 \
+    --batch-size 128 \
+    --lr 0.005 \
+    --dirichlet-alpha 0.5 \
+    --selector-theta 0.02 \
+    --selector-gamma 0.3 \
+    --device cuda \
+    --sync-barrier-timeout 30.0
+```
 
 ## Adding More Jetsons
 
