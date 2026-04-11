@@ -1,6 +1,7 @@
-.ipynb_checkpoints/
-.data/
+ocdFL/data/
+ocdFL/logs/
 __pycache__/
 *.pyc
-client/transport/dfl_pb2.py
-client/transport/dfl_pb2_grpc.py
+.ipynb_checkpoints/
+ocdFL/client/transport/dfl_pb2.py
+ocdFL/client/transport/dfl_pb2_grpc.py
