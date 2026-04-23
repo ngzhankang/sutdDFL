@@ -4,7 +4,6 @@ cd /app/sutdDFL/ocdFL
 
 bash compile_protos.sh
 
-# Auto-detect identity from hostname (e.g. sutdJetson1 → jetson1)
 NODE_ID=$(hostname | tr '[:upper:]' '[:lower:]' | grep -oE '[a-z]+[0-9]+')
 if [ -z "$NODE_ID" ]; then
     NODE_ID="jetson_$(hostname -I | awk '{print $1}' | awk -F. '{print $4}')"
@@ -18,20 +17,37 @@ echo "Node: $NODE_ID"
 echo "My IP: $MY_IP"
 echo "Scanning ${SUBNET}.0/24 for peers on port $PORT..."
 
+# Retry scan up to 5 times to wait for all Jetsons to come online
+MAX_RETRIES=5
+RETRY_DELAY=5
 PEERS=""
-for i in $(seq 1 254); do
-    ip="${SUBNET}.${i}"
-    [ "$ip" = "$MY_IP" ] && continue
-    if timeout 0.3 bash -c "echo > /dev/tcp/$ip/$PORT" 2>/dev/null; then
-        # Query the peer's node_id via a quick gRPC ping, fallback to IP-based name
-        PEER_NAME="jetson_$(echo $ip | awk -F. '{print $4}')"
-        PEERS="${PEERS} ${PEER_NAME}=${ip}:${PORT}"
-        echo "  Found peer: $PEER_NAME @ $ip"
+
+for attempt in $(seq 1 $MAX_RETRIES); do
+    PEERS=""
+    for i in $(seq 1 254); do
+        ip="${SUBNET}.${i}"
+        [ "$ip" = "$MY_IP" ] && continue
+        if timeout 0.3 bash -c "echo > /dev/tcp/$ip/$PORT" 2>/dev/null; then
+            PEER_NAME="jetson_$(echo $ip | awk -F. '{print $4}')"
+            PEERS="${PEERS} ${PEER_NAME}=${ip}:${PORT}"
+            echo "  Found peer: $PEER_NAME @ $ip"
+        fi
+    done
+
+    PEER_COUNT=$(echo $PEERS | wc -w)
+    EXPECTED_PEERS="${EXPECTED_PEERS:-1}"
+    echo "Attempt $attempt/$MAX_RETRIES: Found $PEER_COUNT peer(s), expecting $EXPECTED_PEERS"
+
+    if [ "$PEER_COUNT" -ge "$EXPECTED_PEERS" ]; then
+        break
     fi
+
+    echo "Waiting ${RETRY_DELAY}s before retry..."
+    sleep $RETRY_DELAY
 done
 
 if [ -z "$PEERS" ]; then
-    echo "WARNING: No peers found yet. Starting as standalone (will retry discovery each round)."
+    echo "WARNING: No peers found. Starting standalone."
 fi
 
 echo ""
@@ -50,6 +66,8 @@ python3 main.py \
     --dirichlet-alpha "${ALPHA:-0.5}" \
     --device "${DEVICE:-cuda}" \
     --data-dir ./data \
-    --log-dir ./logs
+    --log-dir ./logs \
     --dataset "${DATASET:-MNIST}" \
     --selector-gamma "${GAMMA:-0.3}" \
+    --selector-theta "${THETA:-0.02}" \
+    --sync-barrier-timeout "${BARRIER_TIMEOUT:-30}"
