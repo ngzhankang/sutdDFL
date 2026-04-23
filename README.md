@@ -55,6 +55,24 @@ sudo docker run --runtime nvidia --net=host -v /home/$USER/SUTD:/app sutd-dfl-je
 
 For full Docker setup instructions including microSD configuration and NVIDIA Container Toolkit installation, see the [Getting Started](https://github.com/ngzhankang/sutdDFL/wiki/Getting-Started) wiki page.
 
+**Updating the image (from any Jetson with the updated code):**
+```bash
+# 1. Rebuild with a new version tag
+sudo docker build --network=host -t sutd-dfl-jetson:v2 .
+
+# 2. Tag for GHCR
+sudo docker tag sutd-dfl-jetson:v2 ghcr.io/ngzhankang/sutd-dfl-jetson:v2
+
+# 3. Login and push (only the pushing Jetson needs GITHUB_PAT in ~/.bashrc)
+echo $GITHUB_PAT | sudo docker login ghcr.io -u ngzhankang --password-stdin
+sudo docker push ghcr.io/ngzhankang/sutd-dfl-jetson:v2
+
+# 4. Other Jetsons pull the new version (no login needed, image is public)
+sudo docker pull ghcr.io/ngzhankang/sutd-dfl-jetson:v2
+```
+
+> Bump the version tag (`v2`, `v3` etc.) with each update — avoid reusing old tags so you always know what version is running on each device.
+
 ---
 
 ## Implementations
