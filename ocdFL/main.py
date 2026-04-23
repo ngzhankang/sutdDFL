@@ -257,7 +257,8 @@ def main():
         client.select_peers()
 
         # 5. Push model to selected peers
-        client.push_model_to_peers()
+        # client.push_model_to_peers()
+        client.push_model_to_all_neighbors()
 
         # 6. Brief wait for incoming models from peers who selected us
         logger.info(f"[{args.node_id}] Waiting for incoming models (3s)...")

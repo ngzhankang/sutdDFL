@@ -449,6 +449,18 @@ class PhysicalClient:
         for peer in self.peers:
             self.transport.push_model(peer.peer_id, sd, loss)
 
+    def push_model_to_all_neighbors(self):
+        """
+        Broadcast current model to ALL discovered neighbors unconditionally.
+        OCD-FL selection only gates aggregation (what we accept),
+        not what we send — ensures bidirectional propagation.
+        """
+        sd = self.model.state_dict()
+        loss = self.loss_history[-1]
+        for neighbor in self.neighbors:
+            self.transport.push_model(neighbor.peer_id, sd, loss)
+            logger.info(f"[{self.node_id}] Broadcast model to {neighbor.peer_id}")
+
     def aggregate(self) -> bool:
         """
         FedAvg aggregation over locally-buffered models received from peers.
