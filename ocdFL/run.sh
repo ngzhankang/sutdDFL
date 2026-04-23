@@ -12,13 +12,15 @@ fi
 MY_IP=$(hostname -I | awk '{print $1}')
 SUBNET=$(echo "$MY_IP" | cut -d. -f1-3)
 PORT=50051
+TOTAL_NODES="${TOTAL_NODES:-3}"
 
 echo "Node: $NODE_ID"
 echo "My IP: $MY_IP"
+echo "Total nodes in cluster: $TOTAL_NODES"
 echo "Scanning ${SUBNET}.0/24 for peers on port $PORT..."
 
-# Retry scan up to 5 times to wait for all Jetsons to come online
-MAX_RETRIES=5
+EXPECTED_PEERS=$((TOTAL_NODES - 1))
+MAX_RETRIES=10
 RETRY_DELAY=5
 PEERS=""
 
@@ -35,7 +37,6 @@ for attempt in $(seq 1 $MAX_RETRIES); do
     done
 
     PEER_COUNT=$(echo $PEERS | wc -w)
-    EXPECTED_PEERS="${EXPECTED_PEERS:-1}"
     echo "Attempt $attempt/$MAX_RETRIES: Found $PEER_COUNT peer(s), expecting $EXPECTED_PEERS"
 
     if [ "$PEER_COUNT" -ge "$EXPECTED_PEERS" ]; then
@@ -59,6 +60,7 @@ python3 main.py \
     --listen "0.0.0.0:$PORT" \
     --self-ip "$MY_IP" \
     --peers $PEERS \
+    --total-nodes "$TOTAL_NODES" \
     --rounds "${ROUNDS:-20}" \
     --local-epochs "${LOCAL_EPOCHS:-3}" \
     --batch-size "${BATCH_SIZE:-64}" \

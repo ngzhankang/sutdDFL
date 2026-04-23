@@ -316,11 +316,6 @@ class PhysicalClient:
         kgains = [self.knowledge_gain(n) for n in self.neighbors]
         costs = [self.communication_cost(n) for n in self.neighbors]
 
-        # After computing kgains and costs, add EMD as a bonus signal
-        emds = [self.data_distribution_difference(n) for n in self.neighbors]
-        max_emd = max(emds) if max(emds) > 0 else 1.0
-        emd_norm = [e / max_emd for e in emds]
-
         # Normalize costs to [0, 1]
         max_cost = max(costs) if max(costs) > 0 else 1.0
         costs_norm = [c / max_cost for c in costs]
@@ -432,7 +427,7 @@ class PhysicalClient:
         avg_loss = total_loss / max(total, 1)
         accuracy = correct / max(total, 1)
         # Update loss history from test (matches simulator behavior)
-        self.loss_history = (self.loss_history[1], avg_loss)
+        # self.loss_history = (self.loss_history[1], avg_loss)
         logger.info(
             f"[{self.node_id}] Test loss={avg_loss:.4f}, accuracy={accuracy:.4f}"
         )

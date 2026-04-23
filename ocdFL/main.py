@@ -115,6 +115,8 @@ def main():
                         help="Seconds to wait for peer readiness before each round")
     parser.add_argument("--dataset", default="MNIST", choices=["MNIST", "FashionMNIST", "CIFAR10"],
                         help="Dataset to use for training")
+    parser.add_argument("--total-nodes", type=int, default=None,
+                    help="Total nodes in cluster (for data partitioning)")
     args = parser.parse_args()
 
     # Parse peers
@@ -125,8 +127,8 @@ def main():
         peer_addrs[pid] = addr
         all_node_ids.append(pid)
 
-    num_nodes = len(all_node_ids)
-    my_index = get_partition_index(args.node_id, all_node_ids)
+    num_nodes = args.total_nodes if args.total_nodes else len(all_node_ids)
+    my_index = get_partition_index(args.node_id, all_node_ids) if len(all_node_ids) > 1 else 0
 
     # ------------------------------------------------------------------
     # Data
@@ -244,11 +246,11 @@ def main():
         logger.info(f"{'='*60}")
         logger.info(f"[{args.node_id}] === ROUND {round_idx}/{args.rounds} ===")
 
-        # 1. Local training
-        train_loss = client.train()
-
-        # 2. Discover neighbors (gRPC ping + metadata fetch)
+        # 1. Discover neighbors (gRPC ping + metadata fetch)
         client.discover_neighbors()
+        
+        # 2. Local training
+        train_loss = client.train()
 
         # 3. Evaluate
         test_loss, test_acc = client.test()
