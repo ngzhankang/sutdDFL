@@ -1,6 +1,20 @@
-# Remove the entire scan loop and just launch directly
-echo ""
-echo "Launching: $NODE_ID (standalone start, peers discovered each round)"
+#!/bin/bash
+set -e
+cd /app/sutdDFL/ocdFL
+
+bash compile_protos.sh
+
+NODE_ID=$(hostname | tr '[:upper:]' '[:lower:]' | grep -oE '[a-z]+[0-9]+')
+if [ -z "$NODE_ID" ]; then
+    NODE_ID="jetson_$(hostname -I | awk '{print $1}' | awk -F. '{print $4}')"
+fi
+
+MY_IP=$(hostname -I | awk '{print $1}')
+PORT=50051
+
+echo "Node: $NODE_ID"
+echo "My IP: $MY_IP"
+echo "Total nodes in cluster: ${TOTAL_NODES:-3}"
 echo "==========================================="
 
 python3 main.py \
