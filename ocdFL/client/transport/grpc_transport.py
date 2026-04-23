@@ -270,3 +270,25 @@ class GrpcTransport:
     def drain_received_models(self):
         """Drain the inbound model buffer."""
         return self.servicer.drain_received_models()
+
+    def update_peers(self, peer_addrs: Dict[str, str]):
+        """
+        Dynamically update the known peer list after subnet scan.
+        Closes stale channels and creates fresh ones for new peers.
+        """
+        # Close channels for peers no longer in the list
+        for pid in list(self._channels.keys()):
+            if pid not in peer_addrs:
+                self._channels[pid].close()
+                del self._channels[pid]
+                del self._stubs[pid]
+                logger.info(f"[{self.node_id}] Removed stale peer: {pid}")
+    
+        # Add new peers
+        for pid, addr in peer_addrs.items():
+            if pid not in self.peer_addrs:
+                logger.info(f"[{self.node_id}] Added new peer: {pid} @ {addr}")
+    
+        # Update the peer_addrs dict
+        self.peer_addrs = peer_addrs
+        logger.info(f"[{self.node_id}] Peer list updated: {list(self.peer_addrs.keys())}")

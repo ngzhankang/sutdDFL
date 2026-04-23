@@ -21,6 +21,7 @@ import os
 import signal
 import sys
 import time
+import socket
 
 import torch
 from torchvision import datasets, transforms
@@ -82,6 +83,21 @@ def get_partition_index(node_id: str, all_node_ids: list) -> int:
     return sorted_ids.index(node_id)
 
 
+def scan_for_peers(subnet: str, port: int, my_ip: str, timeout: float = 0.3) -> dict:
+    """Scan subnet for active gRPC peers. Returns {peer_id: ip:port}."""
+    peers = {}
+    for i in range(1, 255):
+        ip = f"{subnet}.{i}"
+        if ip == my_ip:
+            continue
+        try:
+            with socket.create_connection((ip, port), timeout=timeout):
+                peer_id = f"jetson_{ip.split('.')[-1]}"
+                peers[peer_id] = f"{ip}:{port}"
+        except Exception:
+            pass
+    return peers
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -128,7 +144,13 @@ def main():
         all_node_ids.append(pid)
 
     num_nodes = args.total_nodes if args.total_nodes else len(all_node_ids)
-    my_index = get_partition_index(args.node_id, all_node_ids) if len(all_node_ids) > 1 else 0
+    
+    def ip_based_index(self_ip: str, total_nodes: int) -> int:
+        """Use last octet mod total_nodes for stable partition assignment."""
+        last_octet = int(self_ip.split(".")[-1])
+        return last_octet % total_nodes
+
+    my_index = ip_based_index(args.self_ip, num_nodes)
 
     # ------------------------------------------------------------------
     # Data
@@ -220,16 +242,27 @@ def main():
     # ------------------------------------------------------------------
     # Wait for peers to come online
     # ------------------------------------------------------------------
-    logger.info(f"[{args.node_id}] Waiting for peers to come online...")
+    # Scan for peers now that our gRPC server is up
+    subnet = ".".join(args.self_ip.split(".")[:3])
+    logger.info(f"[{args.node_id}] Scanning for peers on {subnet}.0/24...")
+    
     deadline = time.time() + args.sync_barrier_timeout
+
+    # Initial peer_addrs from --peers args (empty when launched via run.sh)
+    # Will be overwritten by subnet scan below
+    PORT = int(args.listen.split(":")[-1])
+
     while time.time() < deadline:
-        active = client.transport.discover_active_peers()
-        if len(active) == len(peer_addrs):
-            logger.info(f"[{args.node_id}] All peers online: {active}")
+        peer_addrs = scan_for_peers(subnet, PORT, args.self_ip)
+        logger.info(f"[{args.node_id}] Found {len(peer_addrs)} peer(s): {list(peer_addrs.keys())}")
+        expected_peers = (args.total_nodes - 1) if args.total_nodes else 1
+        if len(peer_addrs) >= expected_peers:
             break
-        time.sleep(2)
-    else:
-        logger.warning(f"[{args.node_id}] Timeout waiting for peers, proceeding anyway")
+        logger.info(f"[{args.node_id}] Waiting for peers... retrying in 5s")
+        time.sleep(5)
+    
+    # Update transport with discovered peers
+    client.transport.update_peers(peer_addrs)
 
     # ------------------------------------------------------------------
     # Metrics log
