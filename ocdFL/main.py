@@ -247,11 +247,11 @@ def main():
         # 1. Local training
         train_loss = client.train()
 
-        # 2. Evaluate
-        test_loss, test_acc = client.test()
-
-        # 3. Discover neighbors (gRPC ping + metadata fetch)
+        # 2. Discover neighbors (gRPC ping + metadata fetch)
         client.discover_neighbors()
+
+        # 3. Evaluate
+        test_loss, test_acc = client.test()
 
         # 4. OCD-FL peer selection (knowledge gain + optimization)
         client.select_peers()
