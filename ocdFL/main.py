@@ -174,7 +174,7 @@ def main():
     total = len(full_dataset)
     train_size = int(0.9 * total)
     test_size = total - train_size
-    full_train, test_set = torch.utils.data.crandom_split(
+    full_train, test_set = torch.utils.data.random_split(
         full_dataset, [train_size, test_size],
         generator=torch.Generator().manual_seed(42),
     )
