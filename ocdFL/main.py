@@ -170,11 +170,11 @@ def main():
 
     full_dataset = DatasetClass(root=args.data_dir, train=True, download=True, transform=transform)
 
-    # 70/30 train/test split
+    # 90/10 train/test split
     total = len(full_dataset)
-    train_size = int(0.7 * total)
+    train_size = int(0.9 * total)
     test_size = total - train_size
-    full_train, test_set = torch.utils.data.random_split(
+    full_train, test_set = torch.utils.data.crandom_split(
         full_dataset, [train_size, test_size],
         generator=torch.Generator().manual_seed(42),
     )
