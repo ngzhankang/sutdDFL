@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-cd ../SUTD/sutdDFL/ocdFL
+# cd ./sutdDFL/ocdFL
 
 bash compile_protos.sh
 
