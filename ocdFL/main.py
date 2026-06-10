@@ -289,6 +289,9 @@ def main():
     client = PhysicalClient(
         node_id=args.node_id,
         listen_addr=args.listen,
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(
+            client.optimizer, step_size=5, gamma=0.5
+        ),
         peer_addrs=peer_addrs,
         model=model,
         train_dataset=train_subset,
@@ -399,6 +402,7 @@ def main():
 
         # 7. FedAvg aggregation over received models
         did_agg = client.aggregate()
+        lr_scheduler.step()  # Step LR scheduler after aggregation (even if no agg happened)
 
         # 8. Post-aggregation test
         if did_agg:
