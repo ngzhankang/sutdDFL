@@ -368,13 +368,13 @@ class PhysicalClient:
         return self.peers
 
     # ------------------------------------------------------------------
-    # Local Training (LeNet on MNIST, edge-train-bench style)
+    # Local Training (LeNet on FashionMNIST, edge-train-bench style)
     # ------------------------------------------------------------------
 
-    def train(self) -> float:
+    def train(self) -> Tuple[float, List[float]]:
         """
         Execute local training for `local_epochs` epochs.
-        Returns the average training loss of the last epoch.
+        Returns (final_epoch_loss, list_of_per_epoch_losses).
         """
         self.model.train()
         train_loader = DataLoader(
@@ -382,7 +382,7 @@ class PhysicalClient:
             pin_memory=(self.device.type == "cuda"),
         )
 
-        epoch_loss = 0.0
+        epoch_losses: List[float] = []
         for epoch in range(self.local_epochs):
             running_loss = 0.0
             n_batches = 0
@@ -397,15 +397,16 @@ class PhysicalClient:
                 n_batches += 1
 
             epoch_loss = running_loss / max(n_batches, 1)
+            epoch_losses.append(epoch_loss)
             logger.info(
                 f"[{self.node_id}] Epoch [{epoch+1}/{self.local_epochs}] "
                 f"train_loss={epoch_loss:.4f}"
             )
 
         # Update loss history
-        self.loss_history = (self.loss_history[1], epoch_loss)
+        self.loss_history = (self.loss_history[1], epoch_losses[-1])
         self._last_train_end = time.time()
-        return epoch_loss
+        return epoch_losses[-1], epoch_losses
 
     def test(self) -> Tuple[float, float]:
         """Evaluate on the test set. Returns (loss, accuracy)."""
@@ -426,8 +427,6 @@ class PhysicalClient:
 
         avg_loss = total_loss / max(total, 1)
         accuracy = correct / max(total, 1)
-        # Update loss history from test (matches simulator behavior)
-        # self.loss_history = (self.loss_history[1], avg_loss)
         logger.info(
             f"[{self.node_id}] Test loss={avg_loss:.4f}, accuracy={accuracy:.4f}"
         )

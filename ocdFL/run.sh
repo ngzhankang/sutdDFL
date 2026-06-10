@@ -26,11 +26,10 @@ python3 main.py \
     --local-epochs "${LOCAL_EPOCHS:-3}" \
     --batch-size "${BATCH_SIZE:-64}" \
     --lr "${LR:-0.01}" \
-    --dirichlet-alpha "${ALPHA:-0.5}" \
     --device "${DEVICE:-cuda}" \
     --data-dir ./data \
     --log-dir ./logs \
-    --dataset "${DATASET:-MNIST}" \
+    --dataset "${DATASET:-FashionMNIST}" \
     --selector-gamma "${GAMMA:-0.3}" \
     --selector-theta "${THETA:-0.02}" \
     --sync-barrier-timeout "${BARRIER_TIMEOUT:-60}"

@@ -23,9 +23,10 @@ import sys
 import time
 import socket
 
+import numpy as np
 import torch
 from torchvision import datasets, transforms
-from torch.utils.data import Subset
+from torch.utils.data import ConcatDataset, Subset
 
 from client.models.lenet import LeNetMNIST
 from client.physical_client import PhysicalClient
@@ -42,35 +43,24 @@ logger = logging.getLogger("dfl.main")
 
 
 # ---------------------------------------------------------------------------
-# Non-IID data partitioning (Dirichlet-based, matches OCD-FL experiments)
+# IID equal-class data partitioning
 # ---------------------------------------------------------------------------
 
-def dirichlet_split(dataset, num_partitions: int, alpha: float = 0.5, seed: int = 42):
+def iid_equal_split(targets: np.ndarray, num_partitions: int, seed: int = 42):
     """
-    Split a dataset into `num_partitions` non-IID shards using a
-    Dirichlet distribution over labels.  Returns a list of index arrays.
+    Split dataset indices into num_partitions IID shards with equal class
+    distribution.  Each partition gets floor(class_count / num_partitions)
+    samples per class.  Returns a list of index arrays (into the dataset
+    whose targets were passed).
     """
-    import numpy as np
     rng = np.random.default_rng(seed)
-
-    targets = []
-    for _, t in dataset:
-        targets.append(int(t) if not isinstance(t, int) else t)
-    targets = np.array(targets)
-
-    num_classes = len(set(targets))
-    class_indices = [np.where(targets == c)[0] for c in range(num_classes)]
-
+    num_classes = len(np.unique(targets))
     partitions = [[] for _ in range(num_partitions)]
+
     for c in range(num_classes):
-        proportions = rng.dirichlet([alpha] * num_partitions)
-        proportions = (proportions * len(class_indices[c])).astype(int)
-        # Fix rounding
-        proportions[-1] = len(class_indices[c]) - proportions[:-1].sum()
-        splits = np.split(
-            rng.permutation(class_indices[c]),
-            np.cumsum(proportions)[:-1],
-        )
+        class_idx = np.where(targets == c)[0]
+        shuffled = rng.permutation(class_idx)
+        splits = np.array_split(shuffled, num_partitions)
         for i, s in enumerate(splits):
             partitions[i].extend(s.tolist())
 
@@ -118,8 +108,6 @@ def main():
     parser.add_argument("--local-epochs", type=int, default=3, help="Local training epochs per round")
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--lr", type=float, default=0.01)
-    parser.add_argument("--dirichlet-alpha", type=float, default=0.5,
-                        help="Dirichlet concentration param (lower = more non-IID)")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--data-dir", default="./data")
     parser.add_argument("--log-dir", default="./logs")
@@ -129,7 +117,7 @@ def main():
                         help="Weight for EMD-based data diversity in peer selection")
     parser.add_argument("--sync-barrier-timeout", type=float, default=30.0,
                         help="Seconds to wait for peer readiness before each round")
-    parser.add_argument("--dataset", default="MNIST", choices=["MNIST", "FashionMNIST", "CIFAR10"],
+    parser.add_argument("--dataset", default="FashionMNIST", choices=["MNIST", "FashionMNIST", "CIFAR10"],
                         help="Dataset to use for training")
     parser.add_argument("--total-nodes", type=int, default=None,
                     help="Total nodes in cluster (for data partitioning)")
@@ -144,7 +132,7 @@ def main():
         all_node_ids.append(pid)
 
     num_nodes = args.total_nodes if args.total_nodes else len(all_node_ids)
-    
+
     def ip_based_index(self_ip: str, total_nodes: int) -> int:
         """Use last octet mod total_nodes for stable partition assignment."""
         last_octet = int(self_ip.split(".")[-1])
@@ -153,51 +141,56 @@ def main():
     my_index = ip_based_index(args.self_ip, num_nodes)
 
     # ------------------------------------------------------------------
-    # Data
+    # Data — FashionMNIST 10k sample with IID equal-class split
     # ------------------------------------------------------------------
-    DatasetClass = getattr(datasets, args.dataset)
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize((0.2860,), (0.3530,)),
+    ])
 
-    if args.dataset == "FashionMNIST":
-        transform = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize((0.2860,), (0.3530,)),
-        ])
-    else:
-        transform = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize((0.1307,), (0.3081,)),
-        ])
+    # Load full FashionMNIST: 60k train + 10k test = 70k total
+    train_raw = datasets.FashionMNIST(root=args.data_dir, train=True,  download=True, transform=transform)
+    test_raw  = datasets.FashionMNIST(root=args.data_dir, train=False, download=True, transform=transform)
+    full_dataset = ConcatDataset([train_raw, test_raw])   # 70 000 samples
 
-    full_dataset = DatasetClass(root=args.data_dir, train=True, download=True, transform=transform)
+    # Extract all 70k targets without iterating the dataset (fast)
+    all_targets = np.concatenate([
+        train_raw.targets.numpy(),   # (60000,)
+        test_raw.targets.numpy(),    # (10000,)
+    ])
 
-    # 90/10 train/test split
-    total = len(full_dataset)
-    train_size = int(0.9 * total)
-    test_size = total - train_size
-    full_train, test_set = torch.utils.data.random_split(
-        full_dataset, [train_size, test_size],
-        generator=torch.Generator().manual_seed(42),
-    )
+    # Sample 10k reproducibly (same indices on every node)
+    SAMPLE_SIZE = 10_000
+    rng_sample = torch.Generator().manual_seed(42)
+    sample_indices = torch.randperm(len(full_dataset), generator=rng_sample)[:SAMPLE_SIZE].numpy()
+    sampled_targets = all_targets[sample_indices]
 
-     # Build label list for partitioning
-    class LabeledSubset:
-        def __init__(self, subset):
-            self.subset = subset
-        def __len__(self):
-            return len(self.subset)
-        def __getitem__(self, idx):
-            return self.subset[idx]
+    # 90/10 train/test split of the 10k sample
+    TRAIN_SIZE = int(0.9 * SAMPLE_SIZE)   # 9000
+    TEST_SIZE  = SAMPLE_SIZE - TRAIN_SIZE  # 1000
 
-    partitions = dirichlet_split(full_dataset, num_nodes, alpha=args.dirichlet_alpha)
-    my_indices = partitions[my_index]
-    # Remap indices to the 70% train subset
-    train_indices_set = set(full_train.indices)
-    my_train_indices = [i for i in my_indices if i in train_indices_set]
-    train_subset = Subset(full_dataset, my_train_indices)
+    rng_split = np.random.default_rng(42)
+    perm = rng_split.permutation(SAMPLE_SIZE)
+    train_pool_local_idx = perm[:TRAIN_SIZE]   # indices into sample_indices
+    test_pool_local_idx  = perm[TRAIN_SIZE:]
+
+    train_pool_global = sample_indices[train_pool_local_idx]  # indices into full_dataset
+    test_pool_global  = sample_indices[test_pool_local_idx]
+
+    train_pool = Subset(full_dataset, train_pool_global.tolist())
+    test_set   = Subset(full_dataset, test_pool_global.tolist())  # 1000 samples, shared
+
+    train_targets_pool = sampled_targets[train_pool_local_idx]   # (9000,)
+
+    # IID equal-class partition of the 9k training pool across all nodes
+    partitions = iid_equal_split(train_targets_pool, num_nodes)
+    my_local_indices = partitions[my_index]        # indices into train_pool
+    train_subset = Subset(train_pool, my_local_indices)
 
     logger.info(
-        f"[{args.node_id}] Data partition: {len(my_indices)} samples "
-        f"(index={my_index}/{num_nodes})"
+        f"[{args.node_id}] Data: FashionMNIST 10k sample → "
+        f"{TRAIN_SIZE} train / {TEST_SIZE} test | "
+        f"partition {my_index}/{num_nodes}: {len(my_local_indices)} samples"
     )
 
     # ------------------------------------------------------------------
@@ -242,14 +235,10 @@ def main():
     # ------------------------------------------------------------------
     # Wait for peers to come online
     # ------------------------------------------------------------------
-    # Scan for peers now that our gRPC server is up
     subnet = ".".join(args.self_ip.split(".")[:3])
     logger.info(f"[{args.node_id}] Scanning for peers on {subnet}.0/24...")
-    
-    deadline = time.time() + args.sync_barrier_timeout
 
-    # Initial peer_addrs from --peers args (empty when launched via run.sh)
-    # Will be overwritten by subnet scan below
+    deadline = time.time() + args.sync_barrier_timeout
     PORT = int(args.listen.split(":")[-1])
 
     while time.time() < deadline:
@@ -260,8 +249,7 @@ def main():
             break
         logger.info(f"[{args.node_id}] Waiting for peers... retrying in 5s")
         time.sleep(5)
-    
-    # Update transport with discovered peers
+
     client.transport.update_peers(peer_addrs)
 
     # ------------------------------------------------------------------
@@ -281,9 +269,9 @@ def main():
 
         # 1. Discover neighbors (gRPC ping + metadata fetch)
         client.discover_neighbors()
-        
+
         # 2. Local training
-        train_loss = client.train()
+        train_loss, epoch_losses = client.train()
 
         # 3. Evaluate
         test_loss, test_acc = client.test()
@@ -291,8 +279,7 @@ def main():
         # 4. OCD-FL peer selection (knowledge gain + optimization)
         client.select_peers()
 
-        # 5. Push model to selected peers
-        # client.push_model_to_peers()
+        # 5. Push model to all discovered neighbors
         client.push_model_to_all_neighbors()
 
         # 6. Brief wait for incoming models from peers who selected us
@@ -302,7 +289,7 @@ def main():
         # 7. FedAvg aggregation over received models
         did_agg = client.aggregate()
 
-        # 8. Post-aggregation test (optional, to measure aggregation benefit)
+        # 8. Post-aggregation test
         if did_agg:
             post_loss, post_acc = client.test()
         else:
@@ -311,9 +298,12 @@ def main():
         round_time = time.time() - round_start
 
         # Log metrics
+        current_lr = client.optimizer.param_groups[0]["lr"]
         entry = {
             "round": round_idx,
+            "learning_rate": current_lr,
             "train_loss": train_loss,
+            "epoch_losses": epoch_losses,
             "test_loss_pre_agg": test_loss,
             "test_acc_pre_agg": test_acc,
             "test_loss_post_agg": post_loss,
@@ -326,7 +316,7 @@ def main():
         metrics_log.append(entry)
         logger.info(
             f"[{args.node_id}] Round {round_idx} summary: "
-            f"train_loss={train_loss:.4f}, test_acc={post_acc:.4f}, "
+            f"lr={current_lr}, train_loss={train_loss:.4f}, test_acc={post_acc:.4f}, "
             f"peers={len(client.peers)}, agg={did_agg}, time={round_time:.1f}s"
         )
 
