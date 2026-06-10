@@ -22,7 +22,7 @@ PEERS_ARGS=""
 if [ -n "$PEER_IPS" ]; then
     echo "Using explicit peer IPs: $PEER_IPS"
     for ip in $PEER_IPS; do
-        peer_id="jetson_$(echo "$ip" | awk -F. '{print $4}')"
+        peer_id="jetson_$(echo "$ip" | tr '.' '_')"
         PEERS_ARGS="$PEERS_ARGS --peers ${peer_id}=${ip}:${PORT}"
     done
 else

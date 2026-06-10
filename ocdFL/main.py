@@ -214,12 +214,12 @@ def main():
 
     num_nodes = args.total_nodes if args.total_nodes else len(all_node_ids)
 
-    def ip_based_index(self_ip: str, total_nodes: int) -> int:
-        """Use last octet mod total_nodes for stable partition assignment."""
-        last_octet = int(self_ip.split(".")[-1])
-        return last_octet % total_nodes
-
-    my_index = ip_based_index(args.self_ip, num_nodes)
+    # Derive partition index from sorted position of self_ip among all known IPs.
+    # Sorting full IPs (not just last octet) gives unique, stable assignments
+    # even when all nodes share the same last octet.
+    peer_ips = [addr.split(":")[0] for addr in peer_addrs.values()]
+    all_ips_sorted = sorted([args.self_ip] + peer_ips)
+    my_index = all_ips_sorted.index(args.self_ip) % num_nodes
 
     # ------------------------------------------------------------------
     # Data — FashionMNIST 10k sample with IID equal-class split
