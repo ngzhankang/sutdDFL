@@ -289,9 +289,6 @@ def main():
     client = PhysicalClient(
         node_id=args.node_id,
         listen_addr=args.listen,
-        lr_scheduler = torch.optim.lr_scheduler.StepLR(
-            client.optimizer, step_size=5, gamma=0.5
-        ),
         peer_addrs=peer_addrs,
         model=model,
         train_dataset=train_subset,
@@ -315,6 +312,7 @@ def main():
     signal.signal(signal.SIGTERM, _shutdown)
 
     client.start()
+    lr_scheduler = torch.optim.lr_scheduler.StepLR(client.optimizer, step_size=5, gamma=0.5)
 
     # ------------------------------------------------------------------
     # Wait for peers to come online
