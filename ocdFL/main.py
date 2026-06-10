@@ -23,6 +23,9 @@ import sys
 import time
 import socket
 
+import matplotlib
+matplotlib.use('Agg')  # headless rendering — must be before pyplot import
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from torchvision import datasets, transforms
@@ -73,6 +76,15 @@ def get_partition_index(node_id: str, all_node_ids: list) -> int:
     return sorted_ids.index(node_id)
 
 
+def _tcp_reachable(ip: str, port: int, timeout: float = 0.5) -> bool:
+    """Return True if a TCP connection to ip:port succeeds within timeout."""
+    try:
+        with socket.create_connection((ip, port), timeout=timeout):
+            return True
+    except Exception:
+        return False
+
+
 def scan_for_peers(subnet: str, port: int, my_ip: str, timeout: float = 0.3) -> dict:
     """Scan subnet for active gRPC peers. Returns {peer_id: ip:port}."""
     peers = {}
@@ -87,6 +99,75 @@ def scan_for_peers(subnet: str, port: int, my_ip: str, timeout: float = 0.3) -> 
         except Exception:
             pass
     return peers
+
+
+# ---------------------------------------------------------------------------
+# Post-training plots (headless — saved as PNG, no display needed)
+# ---------------------------------------------------------------------------
+
+def save_plots(metrics_log: list, node_id: str, log_dir: str):
+    """Generate and save a 2×3 metrics summary PNG after training completes."""
+    rounds = [e["round"] for e in metrics_log]
+
+    fig, axes = plt.subplots(2, 3, figsize=(15, 8))
+    fig.suptitle(f"DFL Training — {node_id}", fontsize=14)
+
+    # Train loss (final epoch per round)
+    axes[0, 0].plot(rounds, [e["train_loss"] for e in metrics_log], marker="o")
+    axes[0, 0].set_title("Train Loss (final epoch)")
+    axes[0, 0].set_xlabel("Round")
+    axes[0, 0].set_ylabel("Loss")
+
+    # Per-epoch losses flattened across all rounds
+    ax = axes[0, 1]
+    for e in metrics_log:
+        epoch_losses = e.get("epoch_losses", [e["train_loss"]])
+        start = (e["round"] - 1) * len(epoch_losses)
+        xs = range(start, start + len(epoch_losses))
+        ax.plot(xs, epoch_losses, color="steelblue", alpha=0.6)
+    ax.set_title("Per-Epoch Train Loss")
+    ax.set_xlabel("Global Epoch")
+    ax.set_ylabel("Loss")
+
+    # Test accuracy pre/post aggregation
+    axes[0, 2].plot(rounds, [e["test_acc_pre_agg"]  for e in metrics_log], marker="o", label="Pre-agg")
+    axes[0, 2].plot(rounds, [e["test_acc_post_agg"] for e in metrics_log], marker="s", label="Post-agg")
+    axes[0, 2].set_title("Test Accuracy")
+    axes[0, 2].set_xlabel("Round")
+    axes[0, 2].set_ylabel("Accuracy")
+    axes[0, 2].legend()
+
+    # Test loss pre/post aggregation
+    axes[1, 0].plot(rounds, [e["test_loss_pre_agg"]  for e in metrics_log], marker="o", label="Pre-agg")
+    axes[1, 0].plot(rounds, [e["test_loss_post_agg"] for e in metrics_log], marker="s", label="Post-agg")
+    axes[1, 0].set_title("Test Loss")
+    axes[1, 0].set_xlabel("Round")
+    axes[1, 0].set_ylabel("Loss")
+    axes[1, 0].legend()
+
+    # Learning rate
+    axes[1, 1].plot(rounds, [e["learning_rate"] for e in metrics_log], marker="o", color="orange")
+    axes[1, 1].set_title("Learning Rate")
+    axes[1, 1].set_xlabel("Round")
+    axes[1, 1].set_ylabel("LR")
+
+    # Peers selected (bar) + round time (line, secondary axis)
+    ax2 = axes[1, 2].twinx()
+    axes[1, 2].bar(rounds, [e["num_peers_selected"] for e in metrics_log], alpha=0.6, label="Peers selected")
+    ax2.plot(rounds, [e["round_time_s"] for e in metrics_log], color="red", marker="o", label="Round time (s)")
+    axes[1, 2].set_title("Peers Selected & Round Time")
+    axes[1, 2].set_xlabel("Round")
+    axes[1, 2].set_ylabel("Peers")
+    ax2.set_ylabel("Time (s)")
+    axes[1, 2].legend(loc="upper left")
+    ax2.legend(loc="upper right")
+
+    plt.tight_layout()
+    out_path = os.path.join(log_dir, f"{node_id}_plots.png")
+    plt.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close()
+    logger.info(f"[{node_id}] Plots saved to {out_path}")
+
 
 # ---------------------------------------------------------------------------
 # Main
@@ -235,22 +316,52 @@ def main():
     # ------------------------------------------------------------------
     # Wait for peers to come online
     # ------------------------------------------------------------------
-    subnet = ".".join(args.self_ip.split(".")[:3])
-    logger.info(f"[{args.node_id}] Scanning for peers on {subnet}.0/24...")
-
-    deadline = time.time() + args.sync_barrier_timeout
     PORT = int(args.listen.split(":")[-1])
+    expected_peers = (args.total_nodes - 1) if args.total_nodes else 1
 
-    while time.time() < deadline:
-        peer_addrs = scan_for_peers(subnet, PORT, args.self_ip)
-        logger.info(f"[{args.node_id}] Found {len(peer_addrs)} peer(s): {list(peer_addrs.keys())}")
-        expected_peers = (args.total_nodes - 1) if args.total_nodes else 1
-        if len(peer_addrs) >= expected_peers:
-            break
-        logger.info(f"[{args.node_id}] Waiting for peers... retrying in 5s")
-        time.sleep(5)
+    if peer_addrs:
+        # Explicit peers provided via --peers / PEER_IPS — wait for them to
+        # come online but skip the subnet scan entirely.  This is required when
+        # nodes are on different /24 subnets.
+        logger.info(
+            f"[{args.node_id}] Explicit peer list provided: {list(peer_addrs.keys())}. "
+            f"Skipping subnet scan."
+        )
+        deadline = time.time() + args.sync_barrier_timeout
+        while time.time() < deadline:
+            reachable = {
+                pid: addr for pid, addr in peer_addrs.items()
+                if _tcp_reachable(addr.split(":")[0], PORT)
+            }
+            logger.info(
+                f"[{args.node_id}] Reachable peers: {list(reachable.keys())} "
+                f"({len(reachable)}/{expected_peers} expected)"
+            )
+            if len(reachable) >= expected_peers:
+                break
+            logger.info(f"[{args.node_id}] Waiting for peers... retrying in 5s")
+            time.sleep(5)
+        # Use the full explicit list (not just reachable) — unreachable peers
+        # will simply fail at Ping time each round and be skipped gracefully.
+        final_peers = peer_addrs
+    else:
+        # No explicit peers — fall back to subnet scan (works when all nodes
+        # share the same /24 subnet).
+        subnet = ".".join(args.self_ip.split(".")[:3])
+        logger.info(f"[{args.node_id}] Scanning for peers on {subnet}.0/24...")
+        deadline = time.time() + args.sync_barrier_timeout
+        final_peers = {}
+        while time.time() < deadline:
+            final_peers = scan_for_peers(subnet, PORT, args.self_ip)
+            logger.info(
+                f"[{args.node_id}] Found {len(final_peers)} peer(s): {list(final_peers.keys())}"
+            )
+            if len(final_peers) >= expected_peers:
+                break
+            logger.info(f"[{args.node_id}] Waiting for peers... retrying in 5s")
+            time.sleep(5)
 
-    client.transport.update_peers(peer_addrs)
+    client.transport.update_peers(final_peers)
 
     # ------------------------------------------------------------------
     # Metrics log
@@ -325,11 +436,13 @@ def main():
         client.peers = []
 
     # ------------------------------------------------------------------
-    # Save metrics and shutdown
+    # Save metrics and plots, then shutdown
     # ------------------------------------------------------------------
     with open(metrics_path, "w") as f:
         json.dump(metrics_log, f, indent=2)
     logger.info(f"[{args.node_id}] Metrics saved to {metrics_path}")
+
+    save_plots(metrics_log, args.node_id, args.log_dir)
 
     client.stop()
     logger.info(f"[{args.node_id}] Experiment complete.")
