@@ -21,9 +21,10 @@ echo "Total nodes in cluster: ${TOTAL_NODES:-3}"
 PEERS_ARGS=""
 if [ -n "$PEER_IPS" ]; then
     echo "Using explicit peer IPs: $PEER_IPS"
+    PEERS_ARGS="--peers"
     for ip in $PEER_IPS; do
         peer_id="jetson_$(echo "$ip" | tr '.' '_')"
-        PEERS_ARGS="$PEERS_ARGS --peers ${peer_id}=${ip}:${PORT}"
+        PEERS_ARGS="$PEERS_ARGS ${peer_id}=${ip}:${PORT}"
     done
 else
     echo "No PEER_IPS set — will fall back to subnet scan"
