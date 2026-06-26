@@ -118,11 +118,12 @@ def _get_network_prefix(my_ip: str):
     return struct.unpack("!I", socket.inet_aton(net))[0], 24
 
 
-def scan_for_peers(my_ip: str, port: int, timeout: float = 0.3) -> dict:
+def scan_for_peers(my_ip: str, port: int, timeout: float = 0.1) -> dict:
     """
     Parallel scan of the full local network for active gRPC peers.
     Automatically detects the subnet (e.g. /18) so Jetsons on different
     /24s within the same network are discovered without any manual config.
+    Uses conservative concurrency (64 workers) to avoid flooding the AP.
     Returns {peer_id: "ip:port"}.
     """
     net_int, prefix_len = _get_network_prefix(my_ip)
@@ -145,7 +146,7 @@ def scan_for_peers(my_ip: str, port: int, timeout: float = 0.3) -> dict:
         except Exception:
             pass
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=512) as ex:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=64) as ex:
         ex.map(_check, ips)
 
     return peers
