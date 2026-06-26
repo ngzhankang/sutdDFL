@@ -124,7 +124,7 @@ def scan_for_peers(my_ip: str, port: int, timeout: float = 0.1) -> dict:
     Automatically detects the subnet (e.g. /18) so Jetsons on different
     /24s within the same network are discovered without any manual config.
     Uses conservative concurrency (64 workers) to avoid flooding the AP.
-    Returns {peer_id: "ip:port"}.
+    Returns {peer_id: "ip:port"} for hosts that accept a TCP connection.
     """
     net_int, prefix_len = _get_network_prefix(my_ip)
     num_hosts = (1 << (32 - prefix_len)) - 2
@@ -134,7 +134,7 @@ def scan_for_peers(my_ip: str, port: int, timeout: float = 0.1) -> dict:
         if socket.inet_ntoa(struct.pack("!I", net_int + i)) != my_ip
     ]
 
-    peers = {}
+    candidates = {}
     lock = threading.Lock()
 
     def _check(ip):
@@ -142,14 +142,47 @@ def scan_for_peers(my_ip: str, port: int, timeout: float = 0.1) -> dict:
             with socket.create_connection((ip, port), timeout=timeout):
                 peer_id = "jetson_" + ip.replace(".", "_")
                 with lock:
-                    peers[peer_id] = f"{ip}:{port}"
+                    candidates[peer_id] = f"{ip}:{port}"
         except Exception:
             pass
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=64) as ex:
         ex.map(_check, ips)
 
-    return peers
+    return candidates
+
+
+def _verify_dfl_peer(ip: str, port: int, timeout: float = 1.0) -> bool:
+    """
+    Return True only if the host at ip:port responds to our gRPC DFL Ping.
+    Filters out unrelated school-network services that happen to use port 50051.
+    """
+    try:
+        import grpc
+        from client.transport import dfl_pb2, dfl_pb2_grpc
+        with grpc.insecure_channel(f"{ip}:{port}") as ch:
+            stub = dfl_pb2_grpc.PeerServiceStub(ch)
+            resp = stub.Ping(
+                dfl_pb2.PingRequest(sender_id="scanner", sender_addr="0.0.0.0:0"),
+                timeout=timeout,
+            )
+            return resp.peer_id != ""
+    except Exception:
+        return False
+
+
+def _background_scanner(my_ip: str, port: int, transport, stop_event: threading.Event,
+                        interval: float = 30.0):
+    """
+    Daemon thread: periodically rescans the network and adds newly discovered
+    DFL peers to the live transport. Handles Jetsons that join after startup.
+    """
+    while not stop_event.wait(interval):
+        candidates = scan_for_peers(my_ip, port)
+        for pid, addr in candidates.items():
+            ip = addr.split(":")[0]
+            if _verify_dfl_peer(ip, port):
+                transport.add_peer(pid, addr)
 
 
 # ---------------------------------------------------------------------------
@@ -355,10 +388,12 @@ def main():
     )
 
     beacon = None  # assigned after peer discovery; beacon threads are daemons so they die either way
+    _scanner_stop = threading.Event()
 
     # Graceful shutdown
     def _shutdown(sig, frame):
         logger.info(f"[{args.node_id}] Caught signal {sig}, shutting down...")
+        _scanner_stop.set()
         if beacon is not None:
             beacon.stop()
         client.stop()
@@ -405,7 +440,17 @@ def main():
         deadline = time.time() + args.sync_barrier_timeout
         final_peers = {}
         while time.time() < deadline:
-            final_peers = scan_for_peers(args.self_ip, PORT)
+            candidates = scan_for_peers(args.self_ip, PORT)
+            # Filter out non-DFL services that happen to have port 50051 open
+            final_peers = {
+                pid: addr for pid, addr in candidates.items()
+                if _verify_dfl_peer(addr.split(":")[0], PORT)
+            }
+            if len(candidates) != len(final_peers):
+                logger.info(
+                    f"[{args.node_id}] Filtered {len(candidates) - len(final_peers)} "
+                    f"non-DFL host(s) from scan results"
+                )
             logger.info(
                 f"[{args.node_id}] Found {len(final_peers)} peer(s): {list(final_peers.keys())}"
             )
@@ -426,6 +471,14 @@ def main():
         on_peer_discovered=client.transport.add_peer,
     )
     beacon.start()
+
+    # Background scanner: re-scans every 30s to find Jetsons that join after startup
+    threading.Thread(
+        target=_background_scanner,
+        args=(args.self_ip, PORT, client.transport, _scanner_stop),
+        daemon=True,
+        name="bg-scanner",
+    ).start()
 
     # ------------------------------------------------------------------
     # Metrics log

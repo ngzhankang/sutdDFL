@@ -46,5 +46,5 @@ python3 main.py \
     --dataset "${DATASET:-FashionMNIST}" \
     --selector-gamma "${GAMMA:-0.3}" \
     --selector-theta "${THETA:-0.02}" \
-    --sync-barrier-timeout "${BARRIER_TIMEOUT:-60}" \
+    --sync-barrier-timeout "${BARRIER_TIMEOUT:-120}" \
     $PEERS_ARGS
