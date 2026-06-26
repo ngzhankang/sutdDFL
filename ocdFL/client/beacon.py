@@ -9,12 +9,11 @@ The broadcast address is computed dynamically from the actual network interface,
 so this works regardless of whether the subnet is /18, /24, or anything else.
 """
 
+import fcntl
 import json
 import logging
-import re
 import socket
 import struct
-import subprocess
 import threading
 
 logger = logging.getLogger(__name__)
@@ -22,20 +21,35 @@ logger = logging.getLogger(__name__)
 BEACON_PORT = 50052
 BEACON_INTERVAL = 10  # seconds between broadcasts
 
+# Linux ioctl codes
+_SIOCGIFADDR    = 0x8915
+_SIOCGIFBRDADDR = 0x8919
+
 
 def _get_broadcast_address(my_ip: str) -> str:
-    """Compute the directed broadcast address for the interface that owns my_ip."""
+    """
+    Compute the directed broadcast for the interface that owns my_ip.
+    Uses only stdlib fcntl — no external commands needed inside Docker.
+    """
     try:
-        result = subprocess.run(["ip", "addr", "show"], capture_output=True, text=True)
-        match = re.search(rf"inet\s+({re.escape(my_ip)}/\d+)", result.stdout)
-        if match:
-            ip_prefix = match.group(1)
-            ip, prefix_len = ip_prefix.split("/")
-            prefix_len = int(prefix_len)
-            ip_int = struct.unpack("!I", socket.inet_aton(ip))[0]
-            mask = (0xFFFFFFFF << (32 - prefix_len)) & 0xFFFFFFFF
-            broadcast_int = ip_int | (~mask & 0xFFFFFFFF)
-            return socket.inet_ntoa(struct.pack("!I", broadcast_int))
+        # Read all interface names from /proc/net/dev (always available on Linux)
+        ifaces = []
+        with open("/proc/net/dev") as f:
+            for line in f:
+                line = line.strip()
+                if ":" in line:
+                    ifaces.append(line.split(":")[0].strip())
+
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            for iface in ifaces:
+                try:
+                    ifreq = struct.pack("16sH14s", iface.encode()[:15], socket.AF_INET, b"\x00" * 14)
+                    res = fcntl.ioctl(s.fileno(), _SIOCGIFADDR, ifreq)
+                    if socket.inet_ntoa(res[20:24]) == my_ip:
+                        res = fcntl.ioctl(s.fileno(), _SIOCGIFBRDADDR, ifreq)
+                        return socket.inet_ntoa(res[20:24])
+                except OSError:
+                    continue
     except Exception as e:
         logger.warning(f"Could not compute broadcast address for {my_ip}: {e}")
     return "255.255.255.255"
