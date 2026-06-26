@@ -158,6 +158,7 @@ class GrpcTransport:
         self.node_id = node_id
         self.listen_addr = listen_addr
         self.peer_addrs = peer_addrs  # {peer_id: "ip:port"}
+        self._peer_lock = threading.Lock()
 
         self.servicer = PeerServicer(
             node_id, get_meta_cb, on_model_received_cb, is_active_cb
@@ -187,18 +188,19 @@ class GrpcTransport:
         logger.info(f"[{self.node_id}] gRPC server stopped")
 
     def _get_stub(self, peer_id: str) -> dfl_pb2_grpc.PeerServiceStub:
-        if peer_id not in self._stubs:
-            addr = self.peer_addrs[peer_id]
-            ch = grpc.insecure_channel(
-                addr,
-                options=[
-                    ("grpc.max_send_message_length", 256 * 1024 * 1024),
-                    ("grpc.max_receive_message_length", 256 * 1024 * 1024),
-                ],
-            )
-            self._channels[peer_id] = ch
-            self._stubs[peer_id] = dfl_pb2_grpc.PeerServiceStub(ch)
-        return self._stubs[peer_id]
+        with self._peer_lock:
+            if peer_id not in self._stubs:
+                addr = self.peer_addrs[peer_id]
+                ch = grpc.insecure_channel(
+                    addr,
+                    options=[
+                        ("grpc.max_send_message_length", 256 * 1024 * 1024),
+                        ("grpc.max_receive_message_length", 256 * 1024 * 1024),
+                    ],
+                )
+                self._channels[peer_id] = ch
+                self._stubs[peer_id] = dfl_pb2_grpc.PeerServiceStub(ch)
+            return self._stubs[peer_id]
 
     # ------------------------------------------------------------------
     # Outbound RPCs
@@ -260,35 +262,38 @@ class GrpcTransport:
 
     def discover_active_peers(self) -> List[str]:
         """Ping all known peers, return list of active peer IDs."""
+        with self._peer_lock:
+            peer_ids = list(self.peer_addrs.keys())
         active = []
-        for pid in self.peer_addrs:
+        for pid in peer_ids:
             resp = self.ping_peer(pid)
             if resp and resp.is_active:
                 active.append(pid)
         return active
+
+    def add_peer(self, peer_id: str, addr: str):
+        """Add a single peer discovered at runtime (e.g. via beacon). Thread-safe."""
+        with self._peer_lock:
+            if peer_id in self.peer_addrs:
+                return
+            self.peer_addrs[peer_id] = addr
+        logger.info(f"[{self.node_id}] Beacon: registered new peer {peer_id} @ {addr}")
 
     def drain_received_models(self):
         """Drain the inbound model buffer."""
         return self.servicer.drain_received_models()
 
     def update_peers(self, peer_addrs: Dict[str, str]):
-        """
-        Dynamically update the known peer list after subnet scan.
-        Closes stale channels and creates fresh ones for new peers.
-        """
-        # Close channels for peers no longer in the list
-        for pid in list(self._channels.keys()):
-            if pid not in peer_addrs:
-                self._channels[pid].close()
-                del self._channels[pid]
-                del self._stubs[pid]
-                logger.info(f"[{self.node_id}] Removed stale peer: {pid}")
-    
-        # Add new peers
-        for pid, addr in peer_addrs.items():
-            if pid not in self.peer_addrs:
-                logger.info(f"[{self.node_id}] Added new peer: {pid} @ {addr}")
-    
-        # Update the peer_addrs dict
-        self.peer_addrs = peer_addrs
+        """Replace the full known peer list (called once at startup after discovery)."""
+        with self._peer_lock:
+            for pid in list(self._channels.keys()):
+                if pid not in peer_addrs:
+                    self._channels[pid].close()
+                    del self._channels[pid]
+                    del self._stubs[pid]
+                    logger.info(f"[{self.node_id}] Removed stale peer: {pid}")
+            for pid, addr in peer_addrs.items():
+                if pid not in self.peer_addrs:
+                    logger.info(f"[{self.node_id}] Added new peer: {pid} @ {addr}")
+            self.peer_addrs = peer_addrs
         logger.info(f"[{self.node_id}] Peer list updated: {list(self.peer_addrs.keys())}")

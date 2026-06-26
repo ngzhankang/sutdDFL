@@ -31,6 +31,7 @@ import torch
 from torchvision import datasets, transforms
 from torch.utils.data import ConcatDataset, Subset
 
+from client.beacon import BeaconService
 from client.models.lenet import LeNetMNIST
 from client.physical_client import PhysicalClient
 
@@ -303,9 +304,13 @@ def main():
         device=args.device,
     )
 
+    beacon = None  # assigned after peer discovery; beacon threads are daemons so they die either way
+
     # Graceful shutdown
     def _shutdown(sig, frame):
         logger.info(f"[{args.node_id}] Caught signal {sig}, shutting down...")
+        if beacon is not None:
+            beacon.stop()
         client.stop()
         sys.exit(0)
     signal.signal(signal.SIGINT, _shutdown)
@@ -363,6 +368,17 @@ def main():
             time.sleep(5)
 
     client.transport.update_peers(final_peers)
+
+    # ------------------------------------------------------------------
+    # Beacon — zero-config peer discovery (runs for the lifetime of training)
+    # ------------------------------------------------------------------
+    beacon = BeaconService(
+        node_id=args.node_id,
+        my_ip=args.self_ip,
+        grpc_port=PORT,
+        on_peer_discovered=client.transport.add_peer,
+    )
+    beacon.start()
 
     # ------------------------------------------------------------------
     # Metrics log
