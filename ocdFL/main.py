@@ -15,11 +15,15 @@ Manual usage:
 """
 
 import argparse
+import concurrent.futures
+import fcntl
 import json
 import logging
 import os
 import signal
+import struct
 import sys
+import threading
 import time
 import socket
 
@@ -86,19 +90,64 @@ def _tcp_reachable(ip: str, port: int, timeout: float = 0.5) -> bool:
         return False
 
 
-def scan_for_peers(subnet: str, port: int, my_ip: str, timeout: float = 0.3) -> dict:
-    """Scan subnet for active gRPC peers. Returns {peer_id: ip:port}."""
+_SIOCGIFNETMASK = 0x891B
+_SIOCGIFADDR    = 0x8915
+
+
+def _get_network_prefix(my_ip: str):
+    """Return (network_int, prefix_len) for the interface that owns my_ip."""
+    try:
+        with open("/proc/net/dev") as f:
+            ifaces = [l.strip().split(":")[0].strip() for l in f if ":" in l]
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            for iface in ifaces:
+                try:
+                    ifreq = struct.pack("16sH14s", iface.encode()[:15], socket.AF_INET, b"\x00" * 14)
+                    res = fcntl.ioctl(s.fileno(), _SIOCGIFADDR, ifreq)
+                    if socket.inet_ntoa(res[20:24]) == my_ip:
+                        res = fcntl.ioctl(s.fileno(), _SIOCGIFNETMASK, ifreq)
+                        mask_int = struct.unpack("!I", res[20:24])[0]
+                        ip_int = struct.unpack("!I", socket.inet_aton(my_ip))[0]
+                        return ip_int & mask_int, bin(mask_int).count("1")
+                except OSError:
+                    continue
+    except Exception:
+        pass
+    # Fall back to /24
+    net = ".".join(my_ip.split(".")[:3]) + ".0"
+    return struct.unpack("!I", socket.inet_aton(net))[0], 24
+
+
+def scan_for_peers(my_ip: str, port: int, timeout: float = 0.3) -> dict:
+    """
+    Parallel scan of the full local network for active gRPC peers.
+    Automatically detects the subnet (e.g. /18) so Jetsons on different
+    /24s within the same network are discovered without any manual config.
+    Returns {peer_id: "ip:port"}.
+    """
+    net_int, prefix_len = _get_network_prefix(my_ip)
+    num_hosts = (1 << (32 - prefix_len)) - 2
+    ips = [
+        socket.inet_ntoa(struct.pack("!I", net_int + i))
+        for i in range(1, num_hosts + 1)
+        if socket.inet_ntoa(struct.pack("!I", net_int + i)) != my_ip
+    ]
+
     peers = {}
-    for i in range(1, 255):
-        ip = f"{subnet}.{i}"
-        if ip == my_ip:
-            continue
+    lock = threading.Lock()
+
+    def _check(ip):
         try:
             with socket.create_connection((ip, port), timeout=timeout):
-                peer_id = f"jetson_{ip.split('.')[-1]}"
-                peers[peer_id] = f"{ip}:{port}"
+                peer_id = "jetson_" + ip.replace(".", "_")
+                with lock:
+                    peers[peer_id] = f"{ip}:{port}"
         except Exception:
             pass
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=512) as ex:
+        ex.map(_check, ips)
+
     return peers
 
 
@@ -327,8 +376,7 @@ def main():
 
     if peer_addrs:
         # Explicit peers provided via --peers / PEER_IPS — wait for them to
-        # come online but skip the subnet scan entirely.  This is required when
-        # nodes are on different /24 subnets.
+        # come online but skip the network scan entirely.
         logger.info(
             f"[{args.node_id}] Explicit peer list provided: {list(peer_addrs.keys())}. "
             f"Skipping subnet scan."
@@ -351,14 +399,12 @@ def main():
         # will simply fail at Ping time each round and be skipped gracefully.
         final_peers = peer_addrs
     else:
-        # No explicit peers — fall back to subnet scan (works when all nodes
-        # share the same /24 subnet).
-        subnet = ".".join(args.self_ip.split(".")[:3])
-        logger.info(f"[{args.node_id}] Scanning for peers on {subnet}.0/24...")
+        # No explicit peers — scan the full local network (auto-detects /18, /24, etc.)
+        logger.info(f"[{args.node_id}] Scanning local network for peers...")
         deadline = time.time() + args.sync_barrier_timeout
         final_peers = {}
         while time.time() < deadline:
-            final_peers = scan_for_peers(subnet, PORT, args.self_ip)
+            final_peers = scan_for_peers(args.self_ip, PORT)
             logger.info(
                 f"[{args.node_id}] Found {len(final_peers)} peer(s): {list(final_peers.keys())}"
             )
