@@ -306,23 +306,41 @@ def main():
     my_index = all_ips_sorted.index(args.self_ip) % num_nodes
 
     # ------------------------------------------------------------------
-    # Data — FashionMNIST 10k sample with IID equal-class split
+    # Data — IID equal-class split (FashionMNIST, MNIST, or CIFAR-10)
     # ------------------------------------------------------------------
-    transform = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize((0.2860,), (0.3530,)),
-    ])
+    dataset_name = args.dataset
 
-    # Load full FashionMNIST: 60k train + 10k test = 70k total
-    train_raw = datasets.FashionMNIST(root=args.data_dir, train=True,  download=True, transform=transform)
-    test_raw  = datasets.FashionMNIST(root=args.data_dir, train=False, download=True, transform=transform)
-    full_dataset = ConcatDataset([train_raw, test_raw])   # 70 000 samples
+    if dataset_name == "CIFAR10":
+        transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize((0.4914, 0.4822, 0.4465),
+                                 (0.2023, 0.1994, 0.2010)),
+        ])
+        train_raw = datasets.CIFAR10(root=args.data_dir, train=True,  download=True, transform=transform)
+        test_raw  = datasets.CIFAR10(root=args.data_dir, train=False, download=True, transform=transform)
+        # CIFAR-10 stores targets as a plain list, not a tensor
+        all_targets = np.concatenate([
+            np.array(train_raw.targets),   # (50000,)
+            np.array(test_raw.targets),    # (10000,)
+        ])
+        in_channels = 3
+    else:
+        ds_cls = datasets.FashionMNIST if dataset_name == "FashionMNIST" else datasets.MNIST
+        mean   = (0.2860,) if dataset_name == "FashionMNIST" else (0.1307,)
+        std    = (0.3530,) if dataset_name == "FashionMNIST" else (0.3081,)
+        transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize(mean, std),
+        ])
+        train_raw = ds_cls(root=args.data_dir, train=True,  download=True, transform=transform)
+        test_raw  = ds_cls(root=args.data_dir, train=False, download=True, transform=transform)
+        all_targets = np.concatenate([
+            train_raw.targets.numpy(),   # (60000,)
+            test_raw.targets.numpy(),    # (10000,)
+        ])
+        in_channels = 1
 
-    # Extract all 70k targets without iterating the dataset (fast)
-    all_targets = np.concatenate([
-        train_raw.targets.numpy(),   # (60000,)
-        test_raw.targets.numpy(),    # (10000,)
-    ])
+    full_dataset = ConcatDataset([train_raw, test_raw])
 
     # Sample 10k reproducibly (same indices on every node)
     SAMPLE_SIZE = 10_000
@@ -353,7 +371,7 @@ def main():
     train_subset = Subset(train_pool, my_local_indices)
 
     logger.info(
-        f"[{args.node_id}] Data: FashionMNIST 10k sample → "
+        f"[{args.node_id}] Data: {dataset_name} 10k sample → "
         f"{TRAIN_SIZE} train / {TEST_SIZE} test | "
         f"partition {my_index}/{num_nodes}: {len(my_local_indices)} samples"
     )
@@ -361,7 +379,7 @@ def main():
     # ------------------------------------------------------------------
     # Model
     # ------------------------------------------------------------------
-    model = LeNetMNIST(num_classes=10)
+    model = LeNetMNIST(num_classes=10, in_channels=in_channels)
     logger.info(
         f"[{args.node_id}] LeNet params: "
         f"{sum(p.numel() for p in model.parameters()):,}"
