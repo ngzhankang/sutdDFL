@@ -109,7 +109,7 @@ def shard_split(targets: np.ndarray, num_partitions: int, shards_per_client: int
     rng = np.random.default_rng(seed)
     total_shards = num_partitions * shards_per_client
     # Sort indices by label
-    sorted_idx = np.argsort(targets, stable=True)
+    sorted_idx = np.argsort(targets, kind="stable")
     # Split into equal-size shards
     shards = np.array_split(sorted_idx, total_shards)
     # Shuffle shard order so each node gets a random mix of classes
@@ -337,7 +337,7 @@ def main():
                         help="Data partitioning strategy: iid, dirichlet, or shard (non-IID)")
     parser.add_argument("--dirichlet-alpha", type=float, default=0.5,
                         help="Concentration param for Dirichlet split (lower = more non-IID)")
-    parser.add_argument("--shard-classes", type=int, default=2,
+    parser.add_argument("--shard-classes", type=int, default=7,
                         help="Shards (≈ classes) per client for shard-based non-IID split")
     parser.add_argument("--standalone", action="store_true",
                         help="Run local-only training (no federation) as a baseline comparison")
