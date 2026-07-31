@@ -1,0 +1,11 @@
+data/
+logs/
+wheels/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.git/
+.gitignore
+*.ipynb_checkpoints/
+*.md
