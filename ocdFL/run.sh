@@ -31,6 +31,11 @@ else
 fi
 echo "==========================================="
 
+STANDALONE_FLAG=""
+if [ "${STANDALONE:-0}" = "1" ]; then
+    STANDALONE_FLAG="--standalone"
+fi
+
 python3 main.py \
     --node-id "$NODE_ID" \
     --listen "0.0.0.0:$PORT" \
@@ -47,4 +52,8 @@ python3 main.py \
     --selector-gamma "${GAMMA:-0.3}" \
     --selector-theta "${THETA:-0.02}" \
     --sync-barrier-timeout "${BARRIER_TIMEOUT:-120}" \
+    --partition "${PARTITION:-iid}" \
+    --dirichlet-alpha "${DIRICHLET_ALPHA:-0.5}" \
+    --shard-classes "${SHARD_CLASSES:-2}" \
+    $STANDALONE_FLAG \
     $PEERS_ARGS

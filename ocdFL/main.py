@@ -51,7 +51,7 @@ logger = logging.getLogger("dfl.main")
 
 
 # ---------------------------------------------------------------------------
-# IID equal-class data partitioning
+# Data partitioning strategies
 # ---------------------------------------------------------------------------
 
 def iid_equal_split(targets: np.ndarray, num_partitions: int, seed: int = 42):
@@ -72,6 +72,53 @@ def iid_equal_split(targets: np.ndarray, num_partitions: int, seed: int = 42):
         for i, s in enumerate(splits):
             partitions[i].extend(s.tolist())
 
+    return partitions
+
+
+def dirichlet_split(targets: np.ndarray, num_partitions: int, alpha: float = 0.5, seed: int = 42):
+    """
+    Non-IID split via Dirichlet distribution over classes.
+    Low alpha (e.g. 0.1) → highly skewed, each node sees few classes.
+    High alpha (e.g. 100) → nearly uniform / IID.
+    Returns a list of index arrays.
+    """
+    rng = np.random.default_rng(seed)
+    num_classes = len(np.unique(targets))
+    partitions = [[] for _ in range(num_partitions)]
+
+    for c in range(num_classes):
+        class_idx = np.where(targets == c)[0]
+        shuffled = rng.permutation(class_idx)
+        # Draw proportions for this class from Dirichlet
+        proportions = rng.dirichlet(np.repeat(alpha, num_partitions))
+        # Convert to split points
+        splits = (np.cumsum(proportions) * len(shuffled)).astype(int)[:-1]
+        for i, chunk in enumerate(np.split(shuffled, splits)):
+            partitions[i].extend(chunk.tolist())
+
+    return partitions
+
+
+def shard_split(targets: np.ndarray, num_partitions: int, shards_per_client: int = 2, seed: int = 42):
+    """
+    Non-IID split by sorted shards (McMahan et al. 2017 style).
+    Sort samples by label, divide into (num_partitions * shards_per_client) shards,
+    then assign shards_per_client shards to each node.
+    With shards_per_client=2 each node sees at most 2 classes.
+    """
+    rng = np.random.default_rng(seed)
+    total_shards = num_partitions * shards_per_client
+    # Sort indices by label
+    sorted_idx = np.argsort(targets, stable=True)
+    # Split into equal-size shards
+    shards = np.array_split(sorted_idx, total_shards)
+    # Shuffle shard order so each node gets a random mix of classes
+    shard_order = rng.permutation(total_shards)
+    partitions = []
+    for i in range(num_partitions):
+        assigned = shard_order[i * shards_per_client: (i + 1) * shards_per_client]
+        merged = np.concatenate([shards[j] for j in assigned])
+        partitions.append(merged.tolist())
     return partitions
 
 
@@ -286,6 +333,14 @@ def main():
                         help="Dataset to use for training")
     parser.add_argument("--total-nodes", type=int, default=None,
                     help="Total nodes in cluster (for data partitioning)")
+    parser.add_argument("--partition", default="iid", choices=["iid", "dirichlet", "shard"],
+                        help="Data partitioning strategy: iid, dirichlet, or shard (non-IID)")
+    parser.add_argument("--dirichlet-alpha", type=float, default=0.5,
+                        help="Concentration param for Dirichlet split (lower = more non-IID)")
+    parser.add_argument("--shard-classes", type=int, default=2,
+                        help="Shards (≈ classes) per client for shard-based non-IID split")
+    parser.add_argument("--standalone", action="store_true",
+                        help="Run local-only training (no federation) as a baseline comparison")
     args = parser.parse_args()
 
     # Parse peers
@@ -366,15 +421,24 @@ def main():
 
     train_targets_pool = sampled_targets[train_pool_local_idx]   # (9000,)
 
-    # IID equal-class partition of the 9k training pool across all nodes
-    partitions = iid_equal_split(train_targets_pool, num_nodes)
+    # Partition the training pool according to the chosen strategy
+    if args.partition == "dirichlet":
+        partitions = dirichlet_split(train_targets_pool, num_nodes, alpha=args.dirichlet_alpha)
+        partition_desc = f"dirichlet(α={args.dirichlet_alpha})"
+    elif args.partition == "shard":
+        partitions = shard_split(train_targets_pool, num_nodes, shards_per_client=args.shard_classes)
+        partition_desc = f"shard({args.shard_classes} classes/node)"
+    else:
+        partitions = iid_equal_split(train_targets_pool, num_nodes)
+        partition_desc = "iid"
+
     my_local_indices = partitions[my_index]        # indices into train_pool
     train_subset = Subset(train_pool, my_local_indices)
 
     logger.info(
         f"[{args.node_id}] Data: {dataset_name} {SAMPLE_SIZE} sample → "
         f"{TRAIN_SIZE} train / {TEST_SIZE} test | "
-        f"partition {my_index}/{num_nodes}: {len(my_local_indices)} samples"
+        f"partition [{partition_desc}] {my_index}/{num_nodes}: {len(my_local_indices)} samples"
     )
 
     # ------------------------------------------------------------------
@@ -385,6 +449,101 @@ def main():
         f"[{args.node_id}] LeNet params: "
         f"{sum(p.numel() for p in model.parameters()):,}"
     )
+
+    # ------------------------------------------------------------------
+    # Standalone baseline (no federation)
+    # ------------------------------------------------------------------
+    if args.standalone:
+        device = torch.device(args.device)
+        model = model.to(device)
+        loss_fn = torch.nn.CrossEntropyLoss()
+        optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, momentum=0.9)
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.5)
+        train_loader = torch.utils.data.DataLoader(
+            train_subset, batch_size=args.batch_size, shuffle=True, num_workers=2,
+            pin_memory=(device.type == "cuda"),
+        )
+        test_loader = torch.utils.data.DataLoader(
+            test_set, batch_size=args.batch_size, shuffle=False, num_workers=2,
+            pin_memory=(device.type == "cuda"),
+        )
+
+        os.makedirs(args.log_dir, exist_ok=True)
+        metrics_path = os.path.join(args.log_dir, f"{args.node_id}_standalone_metrics.json")
+        metrics_log = []
+        loss_history = (float("inf"), float("inf"))
+
+        logger.info(f"[{args.node_id}] Running STANDALONE (no federation) for {args.rounds} rounds")
+
+        for round_idx in range(1, args.rounds + 1):
+            round_start = time.time()
+            logger.info(f"{'='*60}")
+            logger.info(f"[{args.node_id}] === STANDALONE ROUND {round_idx}/{args.rounds} ===")
+
+            # Local training
+            model.train()
+            epoch_losses = []
+            for epoch in range(args.local_epochs):
+                running, n_batches = 0.0, 0
+                for inputs, targets in train_loader:
+                    inputs, targets = inputs.to(device), targets.to(device)
+                    optimizer.zero_grad()
+                    out = model(inputs)
+                    loss = loss_fn(out, targets)
+                    loss.backward()
+                    optimizer.step()
+                    running += loss.item()
+                    n_batches += 1
+                ep_loss = running / max(n_batches, 1)
+                epoch_losses.append(ep_loss)
+                logger.info(f"[{args.node_id}] Epoch [{epoch+1}/{args.local_epochs}] train_loss={ep_loss:.4f}")
+            train_loss = epoch_losses[-1]
+            loss_history = (loss_history[1], train_loss)
+
+            # Evaluate
+            model.eval()
+            total_loss, correct, total = 0.0, 0, 0
+            with torch.no_grad():
+                for inputs, targets in test_loader:
+                    inputs, targets = inputs.to(device), targets.to(device)
+                    out = model(inputs)
+                    total_loss += loss_fn(out, targets).item() * targets.size(0)
+                    correct += (out.argmax(1) == targets).sum().item()
+                    total += targets.size(0)
+            test_loss = total_loss / max(total, 1)
+            test_acc = correct / max(total, 1)
+            logger.info(f"[{args.node_id}] Test loss={test_loss:.4f}, accuracy={test_acc:.4f}")
+
+            lr_scheduler.step()
+            current_lr = optimizer.param_groups[0]["lr"]
+            round_time = time.time() - round_start
+
+            entry = {
+                "round": round_idx,
+                "learning_rate": current_lr,
+                "train_loss": train_loss,
+                "epoch_losses": epoch_losses,
+                "test_loss_pre_agg": test_loss,
+                "test_acc_pre_agg": test_acc,
+                "test_loss_post_agg": test_loss,
+                "test_acc_post_agg": test_acc,
+                "num_neighbors": 0,
+                "num_peers_selected": 0,
+                "aggregated": False,
+                "round_time_s": round_time,
+            }
+            metrics_log.append(entry)
+            logger.info(
+                f"[{args.node_id}] Round {round_idx} summary: "
+                f"lr={current_lr}, train_loss={train_loss:.4f}, test_acc={test_acc:.4f}, time={round_time:.1f}s"
+            )
+
+        with open(metrics_path, "w") as f:
+            json.dump(metrics_log, f, indent=2)
+        logger.info(f"[{args.node_id}] Standalone metrics saved to {metrics_path}")
+        save_plots(metrics_log, f"{args.node_id}_standalone", args.log_dir)
+        logger.info(f"[{args.node_id}] Standalone experiment complete.")
+        return
 
     # ------------------------------------------------------------------
     # Physical Client
