@@ -342,15 +342,16 @@ def main():
 
     full_dataset = ConcatDataset([train_raw, test_raw])
 
-    # Sample 10k reproducibly (same indices on every node)
-    SAMPLE_SIZE = 10_000
+    # Sample reproducibly (same indices on every node)
+    # 3334 → 90% = 3000 train → 1500 per node with 2 nodes
+    SAMPLE_SIZE = 3_334
     rng_sample = torch.Generator().manual_seed(42)
     sample_indices = torch.randperm(len(full_dataset), generator=rng_sample)[:SAMPLE_SIZE].numpy()
     sampled_targets = all_targets[sample_indices]
 
-    # 90/10 train/test split of the 10k sample
-    TRAIN_SIZE = int(0.9 * SAMPLE_SIZE)   # 9000
-    TEST_SIZE  = SAMPLE_SIZE - TRAIN_SIZE  # 1000
+    # 90/10 train/test split of the sample
+    TRAIN_SIZE = int(0.9 * SAMPLE_SIZE)   # 3000
+    TEST_SIZE  = SAMPLE_SIZE - TRAIN_SIZE  # 334
 
     rng_split = np.random.default_rng(42)
     perm = rng_split.permutation(SAMPLE_SIZE)
@@ -371,7 +372,7 @@ def main():
     train_subset = Subset(train_pool, my_local_indices)
 
     logger.info(
-        f"[{args.node_id}] Data: {dataset_name} 10k sample → "
+        f"[{args.node_id}] Data: {dataset_name} {SAMPLE_SIZE} sample → "
         f"{TRAIN_SIZE} train / {TEST_SIZE} test | "
         f"partition {my_index}/{num_nodes}: {len(my_local_indices)} samples"
     )
