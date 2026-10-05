@@ -1,6 +1,6 @@
 # sutdDFL — Decentralised Federated Learning on NVIDIA Jetson Orin Nano
 
-A research project by the [Temasek Laboratories @ SUTD](https://www.sutd.edu.sg/) exploring Decentralised Federated Learning (DFL) deployed physically across a cluster of NVIDIA Jetson Orin Nano edge devices.
+A research project exploring Decentralised Federated Learning (DFL) deployed physically across a cluster of NVIDIA Jetson Orin Nano edge devices.
 
 > **Full setup instructions, hardware configuration, and implementation details are documented in the [Wiki](https://github.com/ngzhankang/sutdDFL/wiki).**
 
