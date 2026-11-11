@@ -1,0 +1,56 @@
+# Template SSH config for the group's Jetsons.
+#
+# This repo is PUBLIC: keep real IPs and usernames out of it.
+# The real file is shared privately within the group.
+#
+# Setup:
+#   1. cp ssh_config.example ssh_config   (ssh_config is gitignored)
+#   2. Fill in the real HostName and User values.
+#   3. Add this line at the TOP of ~/.ssh/config, before any Host block
+#      (quote the path if it has spaces):
+#        Include "/absolute/path/to/sutdDFL/ssh_config"
+#   4. ssh sutdjetson1
+#
+# To add a device: add a placeholder block here (and commit it),
+# then send the real values to the group.
+# Never put passwords, private keys or IdentityFile paths in either file.
+
+Host sutdjetson1
+    HostName <school-ip>
+    User <username>
+
+Host sutdjetson2-school
+    HostName <school-ip>
+    User <username>
+
+Host sutdjetson2-home
+    HostName <home-ip>
+    User <username>
+
+Host sutdjetson2-standalone
+    HostName <standalone-ip>
+    User <username>
+
+Host sutdjetson3-school
+    HostName <school-ip>
+    User <username>
+
+Host sutdjetson3-home
+    HostName <home-ip>
+    User <username>
+
+Host sutdjetson3-standalone
+    HostName <standalone-ip>
+    User <username>
+
+Host sutdjetson4-school
+    HostName <school-ip>
+    User <username>
+
+Host sutdjetson4-home
+    HostName <home-ip>
+    User <username>
+
+Host sutdjetson4-standalone
+    HostName <standalone-ip>
+    User <username>

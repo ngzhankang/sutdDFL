@@ -5,3 +5,6 @@ __pycache__/
 .ipynb_checkpoints/
 ocdFL/client/transport/dfl_pb2.py
 ocdFL/client/transport/dfl_pb2_grpc.py
+
+# Real SSH config for the Jetsons (shared privately; see ssh_config.example)
+ssh_config
